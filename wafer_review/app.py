@@ -17,7 +17,7 @@ from flask import (
 from .db import connect, init_db
 from .display import mapped_grid, transform_label
 from .gridview import build_grid
-from .model import NoSolutionError, WaferError, analyze
+from .model import NoSolutionError, PAIR_MASK_ALL, WaferError, analyze
 from .overlay import compare_grid
 from .service import (
     MAX_STEPS,
@@ -28,6 +28,7 @@ from .service import (
     delete_wafer,
     list_wafers,
     load_wafer,
+    pair_constraint_summary,
     remove_locator,
 )
 
@@ -46,6 +47,10 @@ def create_app(test_config: dict | None = None) -> Flask:
         app.config.update(test_config)
 
     init_db(app.config["DATABASE"])
+    # 旧库首次使用：缺约束记录的晶圆在启动时按当前定位点补建配准约束。
+    from .constraints import backfill_legacy_databases
+
+    backfill_legacy_databases(app.config["DATABASE"])
 
     @app.context_processor
     def _inject() -> dict:
@@ -150,8 +155,9 @@ def create_app(test_config: dict | None = None) -> Flask:
     def wafer_detail(wafer_id: int):
         with connect(app.config["DATABASE"]) as conn:
             wafer = load_wafer(conn, wafer_id)
-        if wafer is None:
-            abort(404)
+            if wafer is None:
+                abort(404)
+            constraint_pairs = pair_constraint_summary(conn, wafer)
         analysis = analyze(wafer)
         step_id_text = request.args.get("step")
         did = request.args.get("did", "").strip()
@@ -180,6 +186,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             "wafer.html",
             wafer=wafer,
             feasibility=analysis.feasibility,
+            constraint_pairs=constraint_pairs,
             selected=selected,
             results=results,
             focus=focus,
@@ -334,6 +341,58 @@ def create_app(test_config: dict | None = None) -> Flask:
                     (step, analysis.feasibility.for_step(step.id)) for step in wafer.steps
                 )
             ],
+        }
+
+    @app.get("/api/wafers/<int:wafer_id>/constraints")
+    def api_constraints(wafer_id: int):
+        """已维护的配准约束：逐工序对的有效位图、允许的变换搭配数与同号点片段。"""
+        with connect(app.config["DATABASE"]) as conn:
+            wafer = load_wafer(conn, wafer_id)
+            if wafer is None:
+                abort(404)
+            fragment_rows = conn.execute(
+                "SELECT step_i, step_j, pid, allowed_mask FROM pair_constraint "
+                "WHERE wafer_id = ? ORDER BY step_i, step_j, pid",
+                (wafer_id,),
+            ).fetchall()
+            meta = conn.execute(
+                "SELECT built_revision, built_at FROM constraint_meta WHERE wafer_id = ?",
+                (wafer_id,),
+            ).fetchone()
+
+        analysis = analyze(wafer)
+        index_by_id = {step.id: idx for idx, step in enumerate(wafer.steps)}
+        pairs: dict[tuple[int, int], dict] = {}
+        for row in fragment_rows:
+            i, j = index_by_id[row["step_i"]], index_by_id[row["step_j"]]
+            key = (i, j)
+            entry = pairs.setdefault(
+                key,
+                {
+                    "step_i": wafer.steps[i].name,
+                    "step_j": wafer.steps[j].name,
+                    "fragments": [],
+                    "allowed_pairs": 0,
+                    "mask": 0,
+                },
+            )
+            mask = int(row["allowed_mask"], 16)
+            entry["fragments"].append(
+                {"pid": row["pid"], "allowed_pairs": mask.bit_count(), "mask": format(mask, "x")}
+            )
+        for entry in pairs.values():
+            effective = PAIR_MASK_ALL
+            for frag in entry["fragments"]:
+                effective &= int(frag["mask"], 16)
+            entry["mask"] = format(effective, "x")
+            entry["allowed_pairs"] = effective.bit_count()
+        return {
+            "wafer": wafer.name,
+            "revision": wafer.revision,
+            "built_revision": meta["built_revision"] if meta else None,
+            "built_at": meta["built_at"] if meta else None,
+            "scheme_count": analysis.feasibility.scheme_count,
+            "pairs": [pairs[k] for k in sorted(pairs)],
         }
 
     @app.errorhandler(404)

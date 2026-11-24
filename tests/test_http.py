@@ -202,3 +202,41 @@ def test_locators_api(app, client):
     packing = payload["steps"][5]
     assert packing["transforms"] == ["顺时针270°", "左右镜像"]
     assert [loc["pid"] for loc in packing["locators"]] == ["C1"]
+
+
+def test_constraints_api_and_page_panel(app, client):
+    upload(client)
+    payload = client.get("/api/wafers/1/constraints").get_json()
+    assert payload["scheme_count"] == 2
+    assert payload["built_revision"] == 0
+    # 只有共享同号点的工序对才有约束行：前 5 道两两共享（10 对）+ 沉积↔封装的 C1
+    assert len(payload["pairs"]) == 11
+    # 沉积↔封装靠 C1 配对
+    dep_pack = next(
+        p for p in payload["pairs"]
+        if {p["step_i"], p["step_j"]} == {"沉积", "封装"}
+    )
+    assert [f["pid"] for f in dep_pack["fragments"]] == ["C1"]
+    assert 1 <= dep_pack["allowed_pairs"] <= 64
+    # 详情页含配准约束面板
+    page = client.get("/wafers/1").get_data(as_text=True)
+    assert "配准约束" in page
+    assert "按位与后允许搭配" in page
+
+
+def test_constraints_api_404_for_unknown_wafer(client):
+    assert client.get("/api/wafers/99/constraints").status_code == 404
+
+
+def test_constraints_fragments_update_after_removal(app, client):
+    upload(client)
+    wafer = wafer_of(app)
+    c1 = next(loc for loc in wafer.steps[2].locators if loc.pid == "C1")
+    client.post(
+        f"/wafers/1/locators/{c1.id}/remove",
+        data={"step": str(wafer.steps[2].id)},
+    )
+    payload = client.get("/api/wafers/1/constraints").get_json()
+    all_pids = {f["pid"] for p in payload["pairs"] for f in p["fragments"]}
+    assert "C1" not in all_pids
+    assert payload["built_revision"] == 1

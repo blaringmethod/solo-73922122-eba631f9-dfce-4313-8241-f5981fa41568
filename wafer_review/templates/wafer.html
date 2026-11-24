@@ -53,6 +53,38 @@
       {% endfor %}
     </tbody>
   </table>
+
+  <h3>配准约束（随定位点同事务维护）</h3>
+  <p class="muted small">
+    每个同号定位点对一对工序允许的“变换搭配”记成 64 位位图（8×8 种搭配）；工序对的有效约束是各同号点位图的按位与。
+    撤去一个同号点只删它自己的片段，原先被排除的搭配只有在别的同号点也允许时才恢复。校验与查坐标都读这里已提交的约束。
+  </p>
+  {% if constraint_pairs %}
+  <table class="table compact">
+    <thead>
+      <tr><th>工序对</th><th>同号点片段（编号：允许搭配数/64）</th><th>按位与后允许搭配</th><th>有效位图</th></tr>
+    </thead>
+    <tbody>
+      {% for pair in constraint_pairs %}
+      <tr>
+        <td class="small">{{ pair.step_i.seq }}.{{ pair.step_i.name }} ↔ {{ pair.step_j.seq }}.{{ pair.step_j.name }}</td>
+        <td class="small">
+          {% for frag in pair.fragments %}
+            <span class="chip mono">{{ frag.pid }}：{{ frag.allowed }}</span>
+          {% endfor %}
+        </td>
+        <td>
+          {% if pair.allowed_pairs == 0 %}<span class="badge bad">0（冲突）</span>
+          {% else %}<span class="chip">{{ pair.allowed_pairs }} / 64</span>{% endif %}
+        </td>
+        <td class="mono small">0x{{ pair.mask_hex }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted small">当前没有跨工序同号定位点，工序之间没有配准约束。</p>
+  {% endif %}
 </section>
 
 {% if selected %}

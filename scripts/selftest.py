@@ -217,11 +217,12 @@ def main() -> int:
     pack = {r["defect"]: r for r in data["results"] if r["step"] == "封装"}
     check("更正后 D104 变为确定 (5,5)", pack["D104"]["coordinate"] == [5, 5])
 
-    # 4) 无解更正必须整体回滚，原定位点与原结果沿用
+    # 4) 无解更正必须整体回滚，原定位点、原配准约束、原查询结果全部沿用
     before = {r["defect"]: (r["status"], r["coordinate"]) for r in data["results"] if r["step"] == "封装"}
     locators = api(browser, f"/api/wafers/{wafer_id}/locators")
     steps_by_seq = {s["seq"]: s for s in locators["steps"]}
     c1_pack = _find_locator(steps_by_seq[6], "C1")
+    constraints_before = api(browser, f"/api/wafers/{wafer_id}/constraints")
     status, _ = browser.post_form(
         f"/wafers/{wafer_id}/locators/{c1_pack['id']}/correct",
         {"step": "6", "did": "D104", "row": "1", "col": "1"},
@@ -230,14 +231,75 @@ def main() -> int:
     after = {r["defect"]: (r["status"], r["coordinate"]) for r in data["results"] if r["step"] == "封装"}
     check("无解更正后原查询结果不变", before == after)
     check("无解更正后仍为 2 套方案", data["scheme_count"] == 2, str(data["scheme_count"]))
+    check(
+        "无解更正后配准约束与上一版完全一致",
+        api(browser, f"/api/wafers/{wafer_id}/constraints") == constraints_before,
+    )
     locators = api(browser, f"/api/wafers/{wafer_id}/locators")
     steps_by_seq = {s["seq"]: s for s in locators["steps"]}
     kept = _find_locator(steps_by_seq[6], "C1")
-    check(
-        "无解更正后定位点仍为原坐标 (4,4)",
-        [kept["row"], kept["col"]] == [4, 4],
-        f'{kept["row"]},{kept["col"]}',
+    check("无解更正后定位点仍为原坐标 (4,4)",
+          [kept["row"], kept["col"]] == [4, 4],
+          f'{kept["row"]},{kept["col"]}')
+
+    # 5) 连续撤点演示：撤点逐次放宽/收窄约束，方案数与坐标判定精确变化
+    #    5a. 撤去沉积 C1（封装失去唯一的跨工序约束）
+    c1_dep = _find_locator(steps_by_seq[3], "C1")
+    status, _ = browser.post_form(
+        f"/wafers/{wafer_id}/locators/{c1_dep['id']}/remove", {"step": "3", "did": "D101"}
     )
+    check("连续撤点①：撤沉积 C1 请求成功", status in (302, 303), f"HTTP {status}")
+    data = api(browser, f"/api/wafers/{wafer_id}/defects")
+    check("连续撤点①：方案数 2 → 8", data["scheme_count"] == 8, str(data["scheme_count"]))
+    pack = {r["defect"]: r for r in data["results"] if r["step"] == "封装"}
+    check("连续撤点①：封装 D101 转待定", pack["D101"]["status"] == "pending")
+    constraints = api(browser, f"/api/wafers/{wafer_id}/constraints")
+    check(
+        "连续撤点①：全部约束片段里不再有 C1",
+        all(f["pid"] != "C1" for p in constraints["pairs"] for f in p["fragments"]),
+    )
+
+    #    5b. 再撤光刻 L1：基准锚点少一个；L1 仍被其余 5 道工序共享，片段保留
+    locators = api(browser, f"/api/wafers/{wafer_id}/locators")
+    steps_by_seq = {s["seq"]: s for s in locators["steps"]}
+    l1_base = _find_locator(steps_by_seq[1], "L1")
+    status, _ = browser.post_form(
+        f"/wafers/{wafer_id}/locators/{l1_base['id']}/remove", {"step": "1", "did": "D101"}
+    )
+    check("连续撤点②：撤光刻 L1 请求成功", status in (302, 303), f"HTTP {status}")
+    data = api(browser, f"/api/wafers/{wafer_id}/defects")
+    check("连续撤点②：仍有可行方案", data["scheme_count"] >= 1, str(data["scheme_count"]))
+    constraints = api(browser, f"/api/wafers/{wafer_id}/constraints")
+    l1_pairs = [
+        (p["step_i"], p["step_j"]) for p in constraints["pairs"]
+        if any(f["pid"] == "L1" for f in p["fragments"])
+    ]
+    check(
+        "连续撤点②：L1 片段只存在于不含光刻的工序对之间",
+        l1_pairs and all("光刻" not in pair for pair in l1_pairs),
+        str(l1_pairs),
+    )
+
+    #    5c. 撤点中途查坐标：方案数与坐标判定来自同一次提交的状态
+    status, page = browser.get(f"/wafers/{wafer_id}?step=6&did=D103")
+    check("连续撤点后复查页可查坐标", status == 200 and "D103" in page)
+    check("复查页展示配准约束面板", "配准约束" in page and "按位与后允许搭配" in page)
+
+    # 6) 撤点后改“已无跨工序约束”的定位点仍可正常保存（单工序编号不限制变换）
+    locators = api(browser, f"/api/wafers/{wafer_id}/locators")
+    steps_by_seq = {s["seq"]: s for s in locators["steps"]}
+    c1_pack = _find_locator(steps_by_seq[6], "C1")
+    status, _ = browser.post_form(
+        f"/wafers/{wafer_id}/locators/{c1_pack['id']}/correct",
+        {"step": "6", "did": "D103", "row": "1", "col": "1"},
+    )
+    check("无约束编号改点请求成功", status in (302, 303), f"HTTP {status}")
+    locators = api(browser, f"/api/wafers/{wafer_id}/locators")
+    steps_by_seq = {s["seq"]: s for s in locators["steps"]}
+    moved = _find_locator(steps_by_seq[6], "C1")
+    check("无约束编号改点后落库为 (1,1)", [moved["row"], moved["col"]] == [1, 1])
+    data = api(browser, f"/api/wafers/{wafer_id}/defects")
+    check("改点后方案数仍为 8（C1 已不参与约束）", data["scheme_count"] == 8, str(data["scheme_count"]))
 
     failed = [c for c in CHECKS if not c[1]]
     print(f"\n{len(CHECKS) - len(failed)}/{len(CHECKS)} 项通过")

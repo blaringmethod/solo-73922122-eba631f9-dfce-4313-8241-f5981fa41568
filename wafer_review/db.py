@@ -50,9 +50,32 @@ CREATE TABLE IF NOT EXISTS defect (
     UNIQUE (step_id, did)
 );
 
+-- 配准约束的最小片段：某个同号定位点对某一对工序允许的“变换搭配”位图。
+-- allowed_mask 为 64 位整数，位 k*8+m 置 1 表示“第 i 道用变换 k、第 j 道用
+-- 变换 m”时该同号点换算后重合。一对工序的有效约束 = 各同号点位图按位与，
+-- 因此撤去一个同号点只需删掉它自己的片段。
+CREATE TABLE IF NOT EXISTS pair_constraint (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    wafer_id     INTEGER NOT NULL REFERENCES wafer(id) ON DELETE CASCADE,
+    step_i       INTEGER NOT NULL REFERENCES step(id) ON DELETE CASCADE,
+    step_j       INTEGER NOT NULL REFERENCES step(id) ON DELETE CASCADE,
+    pid          TEXT    NOT NULL,
+    -- 64 位位图可能超过 SQLite 有符号 int64 上限，统一存十六进制文本。
+    allowed_mask TEXT    NOT NULL,
+    UNIQUE (wafer_id, step_i, step_j, pid)
+);
+
+-- 每张晶圆一行：约束已随哪一版定位点建好。旧库首次使用时若缺行则补建。
+CREATE TABLE IF NOT EXISTS constraint_meta (
+    wafer_id      INTEGER PRIMARY KEY REFERENCES wafer(id) ON DELETE CASCADE,
+    built_revision INTEGER NOT NULL,
+    built_at      TEXT    NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_step_wafer ON step(wafer_id, seq);
 CREATE INDEX IF NOT EXISTS idx_locator_step ON locator(step_id);
 CREATE INDEX IF NOT EXISTS idx_defect_step ON defect(step_id);
+CREATE INDEX IF NOT EXISTS idx_pair_wafer ON pair_constraint(wafer_id, step_i, step_j);
 """
 
 

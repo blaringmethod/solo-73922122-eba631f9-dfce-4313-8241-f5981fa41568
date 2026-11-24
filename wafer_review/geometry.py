@@ -25,6 +25,20 @@ ALL_TRANSFORMS: tuple[Transform, ...] = tuple(
 )
 IDENTITY: Transform = (False, 0)
 
+# 变换编号 0..7：纯旋转 0..3、镜像系 4..7。配准约束位图用它做位下标。
+TRANSFORM_COUNT = 8
+
+
+def transform_index(transform: Transform) -> int:
+    """把变换压成 0..7 的编号，与 ``ALL_TRANSFORMS`` 的顺序一致。"""
+    mirrored, turns = transform
+    return (4 if mirrored else 0) + turns
+
+
+def transform_at(index: int) -> Transform:
+    """``transform_index`` 的逆操作。"""
+    return ALL_TRANSFORMS[index]
+
 _LABELS: dict[Transform, str] = {
     (False, 0): "原样",
     (False, 1): "顺时针90°",

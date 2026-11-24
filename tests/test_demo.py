@@ -46,6 +46,7 @@ def test_demo_determined_and_pending(wafer):
 def test_removing_c1_makes_packing_pending(wafer):
     # 沉积的 C1 是封装的唯一跨工序约束
     wafer.steps[2].locators = [loc for loc in wafer.steps[2].locators if loc.pid != "C1"]
+    wafer.invalidate_constraints()  # 直接改内存定位点后，令库内维护的约束视图失效
     after = analyze(wafer)
     assert after.feasibility.scheme_count == 8
     for did in ("D101", "D103", "D105"):
